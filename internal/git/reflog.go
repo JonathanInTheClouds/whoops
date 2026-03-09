@@ -31,6 +31,7 @@ type Action struct {
 	ToHash      string
 	Date        time.Time
 	Raw         string
+	Position    int // lower = more recent, used as tiebreaker
 }
 
 // UndoResult describes what whoops did.
@@ -120,10 +121,32 @@ func ReadReflog(limit int) ([]Action, error) {
 
 	stashActions, _ := readStashReflog(limit) // ignore error — no stash is fine
 
-	// Merge and sort by date descending
+	// Assign positions within each list (0 = most recent)
+	for i := range headActions {
+		headActions[i].Position = i
+	}
+	for i := range stashActions {
+		stashActions[i].Position = i
+	}
+
+	// Merge and sort by date descending.
+	// Tiebreak by position (lower = more recent within its own reflog).
+	// Stash entries win ties over HEAD entries since a stash push always
+	// comes after the reset that git internally runs on HEAD.
 	all := append(headActions, stashActions...)
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].Date.After(all[j].Date)
+	sort.SliceStable(all, func(i, j int) bool {
+		ti, tj := all[i].Date, all[j].Date
+		if ti.Equal(tj) {
+			// Stash entries win on a tie
+			iIsStash := all[i].Type == ActionStash
+			jIsStash := all[j].Type == ActionStash
+			if iIsStash != jIsStash {
+				return iIsStash
+			}
+			// Both same type — use position as tiebreaker
+			return all[i].Position < all[j].Position
+		}
+		return ti.After(tj)
 	})
 
 	if len(all) > limit {
